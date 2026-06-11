@@ -10,7 +10,9 @@ import numpy as np
 import pandas as pd
 import anndata
 from streamlit.testing.v1 import AppTest
+from unittest.mock import patch, MagicMock
 from app import load_local_gene_list, load_gene_data, save_uploaded_file, get_patient_list_from_db
+import streamlit as st
 
 # UNIT TESTS
 
@@ -49,6 +51,50 @@ def test_save_uploaded_file(tmp_path, monkeypatch):
     assert os.path.exists(saved_path)
 
 # INTEGRATION TESTS
+
+@patch('sampling_ui.start_sampling_dialog') 
+def test_start_sampling_button_trigger(mock_dialog):
+    """Tests if the diffusion sampling button triggers the external UI dialog."""
+    st.cache_data.clear()
+    
+    at = AppTest.from_file("app.py").run()
+    
+    sample_btn = next((btn for btn in at.button if btn.label == "Start sampling on a patient"), None)
+    assert sample_btn is not None, "Butonul de sampling nu a fost gasit in interfata!"
+    
+    sample_btn.click().run()
+    
+    assert mock_dialog.called, "Funcția dialogului nu a fost apelată!"
+
+
+@patch('psycopg2.connect') 
+def test_delete_patient_button(mock_connect):
+    """Tests if the Delete button executes the correct SQL query."""
+    st.cache_data.clear()
+    
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_connect.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+    
+    mock_cursor.fetchall.return_value = [{'patient_identifier': 'P01_DELETE_ME'}]
+    
+    mock_cursor.fetchone.return_value = {
+        'patient_identifier': 'P01_DELETE_ME', 
+        'data_file_path': 'dummy.pt',
+        'image_preview_path': None,
+        'highres_tif_path': None,
+        'clinical_json_path': None
+    }
+    
+    at = AppTest.from_file("app.py").run()
+    at.sidebar.selectbox[0].set_value("P01_DELETE_ME").run()
+    
+    delete_btn = next((btn for btn in at.button if btn.label == "Delete"), None)
+    assert delete_btn is not None, "No ddelete button appeard!"
+    
+    delete_btn.click().run()
+    mock_cursor.execute.assert_any_call("DELETE FROM patients WHERE patient_identifier = %s", ("P01_DELETE_ME",))
 
 def test_db_fetch_logic():
     """

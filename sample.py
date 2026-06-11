@@ -2,7 +2,7 @@ import torch
 from torchvision.utils import save_image
 from torch.utils.data import DataLoader, Dataset
 import sys
-sys.path.append("./Stem")
+sys.path.append("/Users/teoschiau/Documents/Licienta/Stem/Stem")
 from Stem.models import Stem_models
 from Stem.diffusion import create_diffusion
 import argparse
@@ -107,9 +107,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sampling_batch_size", type=int, default=32)
     
-    parser.add_argument("--save_path", type=str, default="./HER2ST_results/run/003/samples/") 
-    parser.add_argument("--ckpt", type=str, default="./HER2ST_results/run/003/checkpoints/0200000.pt") 
-    parser.add_argument("--data_path", type=str, default="./hest1k_datasets/her2st/")
+    parser.add_argument("--save_path", type=str, default="./samples/") 
+    parser.add_argument("--ckpt", type=str, default="./0200000.pt") 
+    parser.add_argument("--data_path", type=str, default="./")
     
     args = parser.parse_args()
 
