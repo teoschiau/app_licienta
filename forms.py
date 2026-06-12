@@ -3,7 +3,11 @@ import time
 import streamlit as st
 from database import get_db_connection
 
-PATIENTS_DIR = "./patients"
+from dotenv import load_dotenv
+
+load_dotenv()
+
+PATIENTS_DIR = os.getenv("PATIENTS_DIRECTORY",".")
 
 def save_uploaded_file(uploaded_file, patient_id):
     """Saves an uploaded file to a patient-specific directory and returns the absolute path."""

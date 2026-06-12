@@ -2,8 +2,11 @@ import subprocess
 import streamlit as st
 import re
 import os
+from dotenv import load_dotenv
 
-BASE_DATA_PATH = "/Users/teoschiau/Documents/Licienta/Stem/Stem/hest1k_datasets/her2st/"
+load_dotenv()
+
+BASE_DATA_PATH = os.getenv("DATASET_PATH", ".")
 EMBEDDINGS_DIR = os.path.join(BASE_DATA_PATH, "processed_data", "1spot_uni_ebd")
 
 @st.dialog("Start Sampling on a Patient")

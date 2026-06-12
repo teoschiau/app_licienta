@@ -1,14 +1,21 @@
+import os
+import sys
+import argparse
+
 import torch
 from torchvision.utils import save_image
 from torch.utils.data import DataLoader, Dataset
-import sys
-sys.path.append("/Users/teoschiau/Documents/Licienta/Stem/Stem")
-from Stem.models import Stem_models
-from Stem.diffusion import create_diffusion
-import argparse
 import pandas as pd
 import numpy as np
-import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+stem_path = os.getenv("STEM_PATH", ".")
+sys.path.append(stem_path)
+
+from Stem.models import Stem_models
+from Stem.diffusion import create_diffusion
 
 
 class CustomDataset(Dataset):
@@ -107,7 +114,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sampling_batch_size", type=int, default=32)
     
-    parser.add_argument("--save_path", type=str, default="./samples/") 
+    parser.add_argument("--save_path", type=str, default="./sample/") 
     parser.add_argument("--ckpt", type=str, default="./0200000.pt") 
     parser.add_argument("--data_path", type=str, default="./")
     

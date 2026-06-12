@@ -7,7 +7,11 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 
-GENE_LIST_PATH = "selected_gene_list.txt"
+from dotenv import load_dotenv
+
+load_dotenv()
+
+GENE_LIST_PATH = os.getenv("GENE_LIST", ".")
 
 @st.cache_data
 def load_full_adata(file_input):
