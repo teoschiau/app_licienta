@@ -2,51 +2,65 @@ import subprocess
 import streamlit as st
 import re
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-BASE_DATA_PATH = os.getenv("DATASET_PATH", ".")
-EMBEDDINGS_DIR = os.path.join(BASE_DATA_PATH, "processed_data", "1spot_uni_ebd")
+from database import get_db_connection
 
 @st.dialog("Start Sampling on a Patient")
 def start_sampling_dialog(db_patients): 
-    st.write("Select a valid patient to run the diffusion model.")
+    st.write("Select a valid patient to extract the genes:")
     
-    if os.path.exists(EMBEDDINGS_DIR):
-        local_patients = [f.name.replace("_uni.pt", "") for f in os.scandir(EMBEDDINGS_DIR) if f.is_file() and f.name.endswith("_uni.pt")]
-    else:
-        local_patients = []
-        st.error(f"Cannot find the directory: {EMBEDDINGS_DIR}")
+    valid_patients = []
+    patient_paths = {}
+    
+    try:
+        conn, cursor = get_db_connection()
+        cursor.execute("SELECT patient_identifier, data_file_path, highres_tif_path FROM patients")
+        records = cursor.fetchall()
+        cursor.close()
+        conn.close()
         
-    valid_patients = [patient for patient in db_patients if patient in local_patients]
-    
+        for record in records:
+            pat_id = record['patient_identifier']
+            st_path = record['data_file_path']
+            tif_path = record['highres_tif_path']
+            
+            if st_path and tif_path and os.path.exists(st_path) and os.path.exists(tif_path):
+                valid_patients.append(pat_id)
+                patient_paths[pat_id] = {
+                    "st_path": st_path,
+                    "tif_path": tif_path
+                }
+    except Exception as e:
+        st.error(f"Database error: {e}")
+        return
+        
     if not valid_patients:
-        st.warning("No ready patients found. Ensure patients are added to the DB and their embedding files exist in the dataset folder.")
+        st.warning("No ready patients found. Ensure .tif and .h5ad files are uploaded via the Patient Profile.")
         return 
         
     slide_id = st.selectbox(
         "Select Patient*", 
         options=valid_patients,
-        help="Only patients present in both the database and local dataset are shown."
+        help="Only patients with complete raw data (.tif & .h5ad) in the database are shown."
     )
     
-    if st.button("Run Diffusion Sampling", type="primary"):
-        st.markdown(f"**Initializing AI Engine for {slide_id}...**")
+    if st.button("Run AI Pipeline", type="primary"):
+        st.markdown(f"**Initializing Pipeline for {slide_id}...**")
         
         progress_bar = st.progress(0)
         status_text = st.empty()
-        log_expander = st.expander("Live Backend Errors", expanded=False)
-        generated_file_path = None 
+        
+        selected_st_path = patient_paths[slide_id]["st_path"]
+        selected_tif_path = patient_paths[slide_id]["tif_path"]
         
         try:
             downloads_path = os.path.join(os.path.expanduser("~"), "Downloads", "")
             
             command = [
-                "python","-u", "sample.py", 
+                "python","-u", "processing_sampling.py", 
                 "--slide_out", slide_id,
                 "--save_path", downloads_path,
-                "--data_path", BASE_DATA_PATH
+                "--tif_path", selected_tif_path,
+                "--st_path", selected_st_path
             ]
             
             process = subprocess.Popen(
@@ -54,11 +68,24 @@ def start_sampling_dialog(db_patients):
             )
             
             full_logs = ""
-            status_text.markdown("⏳ Loading model weights into memory... (This may take a minute)")
+            status_text.markdown("Analyzing data state... (Checking for embeddings)")
             
             for line in process.stdout:
                 full_logs += line 
                 
+                if "Starting on-the-fly extraction" in line:
+                    status_text.warning("Pre-computed embeddings missing. Extracting features from TIF (This will take a few minutes)...")
+                    
+                match_extract = re.search(r"Extracting patches for (\d+) spots", line)
+                if match_extract:
+                    status_text.info(f"Processing image patches... Found {match_extract.group(1)} spatial spots.")
+                    
+                if "Saved embeddings to disk" in line:
+                    status_text.success("Extraction complete! Cleared memory.")
+                    
+                if "Loading checkpoint" in line:
+                    status_text.markdown("Loading Diffusion model weights into memory...")
+
                 match_progress = re.search(r"Batch (\d+)/(\d+) DONE", line)
                 if match_progress:
                     current = int(match_progress.group(1))
@@ -66,7 +93,7 @@ def start_sampling_dialog(db_patients):
                     progress_pct = float(current) / float(total)
                     progress_pct = max(0.0, min(1.0, progress_pct))
                     progress_bar.progress(progress_pct)
-                    status_text.markdown(f" **Generating samples:** Batch **{current}** out of **{total}** completed...")
+                    status_text.markdown(f"**Generating samples:** Batch **{current}** out of **{total}** completed...")
                 
                 match_save = re.search(r"Successfully saved samples to:\s*(.+)", line)
                 if match_save:

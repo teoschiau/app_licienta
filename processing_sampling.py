@@ -1,15 +1,21 @@
 import os
 import sys
 import argparse
+from PIL import Image
+from tqdm import tqdm
 
 import torch
 from torchvision.utils import save_image
 from torch.utils.data import DataLoader, Dataset
 import pandas as pd
 import numpy as np
+import anndata
+
 from dotenv import load_dotenv
+from huggingface_hub import login
 
 load_dotenv()
+hf_token = os.getenv("HF_TOKEN", "")
 
 stem_path = os.getenv("STEM_PATH", ".")
 sys.path.append(stem_path)
@@ -42,6 +48,90 @@ def find_model(model_name, device=""):
     elif "model" in checkpoint:
         checkpoint = checkpoint["model"]
     return checkpoint
+
+
+def extract_embeddings_if_needed(slide_id, data_path, device, tif_file, st_file):
+    """
+    Verifică dacă embeddings există. Dacă nu, le generează pe loc din imaginea TIF și fișierul h5ad.
+    """
+    uni_path = os.path.join(data_path, "processed_data", "1spot_uni_ebd", f"{slide_id}_uni.pt")
+    conch_path = os.path.join(data_path, "processed_data", "1spot_conch_ebd", f"{slide_id}_conch.pt")
+    
+    if os.path.exists(uni_path) and os.path.exists(conch_path):
+        print(f"[PIPELINE] Embeddings for {slide_id} already exist. Skipping extraction.")
+        return
+
+    print(f"[PIPELINE] Embeddings not found. Starting on-the-fly extraction for {slide_id}...")
+
+    
+    if not os.path.exists(tif_file) or not os.path.exists(st_file):
+        raise FileNotFoundError(f"Missing raw data for {slide_id}. Ensure .tif and .h5ad exist.")
+
+    img = Image.open(tif_file)
+    adata = anndata.read_h5ad(st_file)
+    
+    if hf_token:
+        login(token=hf_token)
+    else:
+        print("WARNING: No HF_TOKEN found in .env. Model download might fail.")
+
+    from conch.open_clip_custom import create_model_from_pretrained
+    pretrained_CONCH, preprocess_CONCH = create_model_from_pretrained('conch_ViT-B-16', "hf_hub:MahmoodLab/conch", device=device, hf_auth_token=hf_token)
+    
+    from uni import get_encoder
+    model_UNI, transform_UNI = get_encoder(enc_name='uni', device=device)
+
+    def get_img_embd_conch(patch):
+        patch_resized = patch.resize((256, 256), Image.Resampling.LANCZOS)
+        patch_processed = preprocess_CONCH(patch_resized).unsqueeze(0)
+        with torch.inference_mode():
+            feature_emb = pretrained_CONCH.encode_image(patch_processed.to(device), proj_contrast=False, normalize=False)
+        return torch.clone(feature_emb)
+    
+    def get_img_embd_uni(patch):
+        patch_resized = patch.resize((224, 224), Image.Resampling.LANCZOS)
+        img_transformed = transform_UNI(patch_resized).unsqueeze(dim=0)
+        with torch.inference_mode():
+            feature_emb = model_UNI(img_transformed.to(device))
+        return torch.clone(feature_emb)
+
+    spot_diameter = adata.uns["spatial"]["ST"]["scalefactors"]["spot_diameter_fullres"]
+    radius = 112 if spot_diameter < 224 else int(spot_diameter // 2)
+    x = adata.obsm["spatial"][:, 0]
+    y = adata.obsm["spatial"][:, 1]
+
+    all_patch_ebd_conch = None
+    all_patch_ebd_uni = None
+    first = True
+
+    print(f"Extracting patches for {len(x)} spots...")
+    for spot_idx in tqdm(range(len(x))):
+        patch = img.crop((x[spot_idx]-radius, y[spot_idx]-radius, x[spot_idx]+radius, y[spot_idx]+radius))
+        patch_ebd_conch = get_img_embd_conch(patch)
+        patch_ebd_uni   = get_img_embd_uni(patch)
+
+        if first:
+            all_patch_ebd_conch = patch_ebd_conch
+            all_patch_ebd_uni   = patch_ebd_uni
+            first = False
+        else:
+            all_patch_ebd_conch = torch.cat((all_patch_ebd_conch, patch_ebd_conch), dim=0)
+            all_patch_ebd_uni   = torch.cat((all_patch_ebd_uni, patch_ebd_uni), dim=0)
+
+    os.makedirs(os.path.dirname(conch_path), exist_ok=True)
+    os.makedirs(os.path.dirname(uni_path), exist_ok=True)
+
+    torch.save(all_patch_ebd_conch.detach().cpu(), conch_path)
+    torch.save(all_patch_ebd_uni.detach().cpu(), uni_path)
+    print(f"[PIPELINE] Saved embeddings to disk successfully.")
+
+    del pretrained_CONCH
+    del model_UNI
+    if device.type == "mps":
+        torch.mps.empty_cache()
+    elif device.type == "cuda":
+        torch.cuda.empty_cache()
+    print("[PIPELINE] Cleared Encoders from memory to make room for Diffusion Model.")
 
 
 def main(args):
@@ -118,6 +208,9 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt", type=str, default="./0200000.pt") 
     parser.add_argument("--data_path", type=str, default="./")
     
+    parser.add_argument("--tif_path", type=str, required=True, help="Absolute path to the TIF image from DB")
+    parser.add_argument("--st_path", type=str, required=True, help="Absolute path to the h5ad file from DB")
+    
     args = parser.parse_args()
 
     if torch.backends.mps.is_available():
@@ -132,9 +225,11 @@ if __name__ == "__main__":
     
     data_path = args.data_path
     
+    extract_embeddings_if_needed(args.slide_out, args.data_path, args.device, args.tif_path, args.st_path)
+    
     print(f"Loading multimodal embeddings for {args.slide_out}...")
-    img_ebd_uni   = torch.load(data_path + "processed_data/1spot_uni_ebd/"   + args.slide_out + "_uni.pt", map_location="cpu")
-    img_ebd_conch = torch.load(data_path + "processed_data/1spot_conch_ebd/" + args.slide_out + "_conch.pt", map_location="cpu")
+    img_ebd_uni   = torch.load(os.path.join(data_path, "processed_data", "1spot_uni_ebd", f"{args.slide_out}_uni.pt"), map_location="cpu")
+    img_ebd_conch = torch.load(os.path.join(data_path, "processed_data", "1spot_conch_ebd", f"{args.slide_out}_conch.pt"), map_location="cpu")
     
     all_img_ebd = torch.cat([img_ebd_uni, img_ebd_conch], dim=1)
     args.raw_cond = all_img_ebd
@@ -143,12 +238,10 @@ if __name__ == "__main__":
     print(f"Combined Condition Vector Size: {args.cond_size}")
 
     args.cond = torch.zeros_like(args.raw_cond.repeat((args.sample_num_per_cond, 1)))
-    print("Total number of samples to generate: ", args.cond.shape)
     for i in range(args.sample_num_per_cond):
         args.cond[i::args.sample_num_per_cond] = args.raw_cond.clone()
 
-    selected_genes = np.genfromtxt(data_path + "processed_data/" + args.gene_list_filename, dtype=str)
-    print("Selected genes are in file - ", args.gene_list_filename)
+    selected_genes = np.genfromtxt(os.path.join(data_path, "processed_data", args.gene_list_filename), dtype=str)
     args.input_gene_size = len(selected_genes)
 
     args.dataset = CustomDataset(args.cond, args.cond)

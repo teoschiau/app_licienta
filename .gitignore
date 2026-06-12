@@ -106,6 +106,7 @@ __pycache__/
 .vscode/
 
 patients/
+processed_data/
 
 # LLM models
 *.gguf
